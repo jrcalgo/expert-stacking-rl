@@ -1,2 +1,2 @@
 # ensembled-RL
-Ensembled micro-architecture NNs for Explainable Reinforcement Learning
+Example of Ensembled miniature NNs for Explainable Reinforcement Learning & Deployability into Resource-Constrained Distributed Systems 
