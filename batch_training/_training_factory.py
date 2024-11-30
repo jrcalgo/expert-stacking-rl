@@ -1,7 +1,9 @@
 # training_factory.py
 
-from ensemble_algorithms import EnsembleDQN, EnsemblePPO
+from ensemble_algorithms.ensemble_dqn import EnsembleDQN
+from ensemble_algorithms.ensemble_ppo import EnsemblePPO
 from gym_environments import create_env
+
 
 class training_factory:
     def __init__(self, algorithm: str, train_iters: int, epochs: int, seed:int, env_name: str, torch_model):

@@ -1,6 +1,5 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
+import tensorflow as tf
+from tensorflow import keras
 
 import gymnasium as gym
 
@@ -9,22 +8,12 @@ import numpy as np
 from copy import deepcopy
 import threading
 
+from utils import load_hyperparams, combined_shape
 from network_ensemble import MiniArchitectureEnsemble
 
+ensemble, hyperparams = load_hyperparams('dqn')
 
-def combined_shape(length, shape=None):
-    if shape is None:
-        return (length,)
-    return (length, shape) if np.isscalar(shape) else (length, *shape)
-
-
-def load_dqn_params():
-
-
-
-hyperparams, ensemble = load_dqn_params()
-
-class EnsembleDQN():
+class EnsembleDQN(tf.Module):
     def __init__(self, 
                  env: gym.Env,
                  mlp_input_size, 
@@ -33,8 +22,7 @@ class EnsembleDQN():
                  cnn_input_dim,
                  action_dim,
                  buffer_size, 
-                 batch_size: int = hyperparams['batch_size'], 
-                 seed: int = hyperparams['seed'], 
+                 batch_size: int = hyperparams['batch_size'],
                  traj_per_epoch: int = hyperparams['traj_per_epoch'], 
                  gamma: float = hyperparams['gamma'], 
                  epsilon: float = hyperparams['epsilon'], 
@@ -44,7 +32,7 @@ class EnsembleDQN():
                  train_q_iters: int = hyperparams['train_q_iters'], 
                  train_update_freq: int = hyperparams['train_update_freq'], 
                  target_update_freq: int = hyperparams['target_update_freq'],
-                 device: str = ensemble['device'],
+                 initial_seed: str = ensemble['initial_seed'],
                  kernel_size: int = ensemble['kernel_size'],
                  stride: int = ensemble['stride'],
                  padding: int = ensemble['padding'],
@@ -58,9 +46,6 @@ class EnsembleDQN():
                  ):
         
         super().__init__()
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-
         self.env = env
 
         ### Hyperparameters
@@ -86,19 +71,19 @@ class EnsembleDQN():
         self._target_update_freq = target_update_freq
 
         ### NNs and Optimizers
-        self._ensemble_model = MiniArchitectureEnsemble(mlp_input_dim, cnn_input_dim, action_dim, device, kernel_size,  
-                                                        stride, padding, mlp_count, cnn_count, mlp_dropout, cnn_dropout, 
-                                                        mlp_batch_size, cnn_batch_size, grad_dir)
+        self._ensemble_model = MiniArchitectureEnsemble(mlp_input_dim, cnn_input_dim, action_dim, initial_seed, kernel_size,
+                                                        stride, padding, mlp_count, cnn_count, mlp_dropout, cnn_dropout,
+                                                        mlp_batch_size)
         self._target_model = deepcopy(self._ensemble_model)
 
-        self._model_optimizers = [optim.adam(model.parameters(), lr=q_lr) for model in self._ensemble_model.models]
-        self._target_optimizers = [optim.adam(model.parameters(), lr=q_lr) for model in self._target_model.models]
+        self._model_optimizers = [keras.optimizers.Adam(model.parameters(), lr=q_lr) for model in self._ensemble_model.models]
+        self._target_optimizers = [keras.optimizers.Adam(model.parameters(), lr=q_lr) for model in self._target_model.models]
 
         ### Replay buffer
         self.ptr, self.size, self.max_size = 0, 0, self._buffer_size
 
         self._mlp_obs_buffer = np.zeros(combined_shape(self._buffer_size, self._mlp_input_dim), dtype=np.float32)
-        self._mlp_next_obs_buffer = np.zeroes(combined_shape(self._buffer_size, self._cnn_input_dim), dtype=np.float32)
+        self._mlp_next_obs_buffer = np.zeros(combined_shape(self._buffer_size, self._cnn_input_dim), dtype=np.float32)
         self._cnn_obs_buffer = np.zeros(combined_shape(self._buffer_size, self._cnn_input_dim), dtype=np.float32)
         self._cnn_next_obs_buffer = np.zeros(combined_shape(self._buffer_size, self._cnn_input_dim), dtype=np.float32)
 
@@ -106,22 +91,20 @@ class EnsembleDQN():
         self._rew_buffer = np.zeros(self._buffer_size, dtype=np.float32)
         self._ret_buffer = np.zeros(self._buffer_size, dtype=np.float32)
         self._q_val_buffer = np.zeros(self._buffer_size, dtype=np.float32)
-        self._done_buffer = np.zeroes(self._buffer_size, dtype=bool)
+        self._done_buffer = np.zeros(self._buffer_size, dtype=bool)
     
-    def select_action(self, obs: torch.Tensor):
+    def select_action(self, obs: tf.Tensor):
         self._epsilon = self._epsilon - self._epsilon_decay
         if np.random.rand() < self._epsilon:
-            # choose 2nd most popular/probable
+            # choose random action
             return self.env.action_space.sample()
         else:
             # choose most popular/probable/argmax action
-            q_val_list = []
-            for model in self._ensemble_model.models:
-                model.eval()
-                with torch.no_grad():
-                    q_vals = model.forward
+            return self._ensemble_model.call_ensemble(obs)
 
-    def step(self, obs: torch.Tensor):
+    def step(self, obs: tf.Tensor):
+        action = self.select_action(obs)[0]
+        env_return = self.env.step(action)
 
 
     def train_n_epochs(self, n_epochs):

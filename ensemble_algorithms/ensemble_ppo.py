@@ -15,8 +15,6 @@ class EnsemblePPO:
     def __init__(self):
         
         super().__init__()
-        torch.manual_seed(seed)
-        np.random.seed(seed)
 
     def train_one_epoch(self):
         
