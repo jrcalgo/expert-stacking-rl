@@ -1,7 +1,53 @@
+"""
+This module defines a simple ensemble of small MLP and CNN networks.
+Each MLP and CNN networks are aggregated using an ensemble stacking or bagging procedure that then feeds into a final voting layer.
+Reward performance-based weighting is used to indicate the importance of each model in the ensemble.
+During bagging:
+    - Whatever algorithm that is implementing MiniArchitectureEnsemble must pass replay buffer data to buffer_bagging().
+    - Perform actions, accumulate trajectories, and calculate loss value of each bagged model in the ensemble
+    - The aggregated mini networks use the value derived from the loss values x (1-performance weights)
+      to update their nn parameters.
+During stacking:
+    - MiniArchitectureEnsemble directly initializes and uses stacked_aggregate_model as the aggregate model.
+    - Perform actions, accumulate trajectories, and calculate loss value of stacked_aggregate_model.
+    - The aggregate model uses the entire loss value to update its nn parameters during backpropagation.
+    - The aggregated mini networks use the value derived from the same loss value x (1-performance weights)
+      to update their nn parameters.
+After each training series, save current model parameters to disk, discard old model parameters, randomly select new
+model indices for a new model minibatch while retaining the most performant model, and repeat the process...
+"""
+
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 import os
+
+
+def buffer_bagging(models: list[keras.Model], X: tf.Tensor, y: tf.Tensor, performance_weights: np.ndarray):
+    """
+    Buffer data for bagging.
+
+    Args:
+        models (list[keras.Model]): List of models in the ensemble.
+        X (tf.Tensor): Input data.
+        y (tf.Tensor): Target data.
+        performance_weights (np.ndarray): Performance weights for the models.
+    """
+    for i, model in enumerate(models):
+        model.train_on_batch(X, y, sample_weight=performance_weights[i])
+
+
+def stacked_aggregate_model(input_dim: int, output_dim: int, seed: int):
+    tf.random.set_seed(seed)
+    model = keras.Sequential([
+        keras.layers.Dense(input_dim, activation='relu'),
+        keras.layers.Dense(36, activation='relu'),
+        keras.layers.Dense(24, activation='relu'),
+        keras.layers.Dense(12, activation='relu'),
+        keras.layers.Dense(8, activation='relu'),
+        keras.layers.Dense(output_dim)
+    ])
+    return model
 
 
 def miniMLP(input_dim: int, output_dim: int, seed: int):
@@ -19,9 +65,9 @@ def miniMLP(input_dim: int, output_dim: int, seed: int):
     tf.random.set_seed(seed)
     model = keras.Sequential([
         keras.layers.Dense(input_dim, activation='relu'),
-        keras.layers.Dense(16, activation='relu'),
         keras.layers.Dense(8, activation='relu'),
         keras.layers.Dense(4, activation='relu'),
+        keras.layers.Dense(2, activation='relu'),
         keras.layers.Dense(output_dim)
     ])
     return model
@@ -44,12 +90,12 @@ def miniCNN(input_shape: tuple, output_dim: int, kernel_size: int, stride: int, 
     """
     tf.random.set_seed(seed)
     model = keras.Sequential([
-        keras.layers.Conv2D(36, kernel_size, strides=stride, padding=padding, activation='relu', input_shape=input_shape),
+        keras.layers.Conv2D(24, kernel_size, strides=stride, padding=padding, activation='relu', input_shape=input_shape),
         keras.layers.MaxPooling2D(pool_size=kernel_size, strides=stride),
-        keras.layers.Conv2D(24, kernel_size, strides=stride, padding=padding, activation='relu'),
+        keras.layers.Conv2D(12, kernel_size, strides=stride, padding=padding, activation='relu'),
         keras.layers.MaxPooling2D(pool_size=kernel_size, strides=stride),
         keras.layers.Flatten(),
-        keras.layers.Dense(12, activation='relu'),
+        keras.layers.Dense(6, activation='relu'),
         keras.layers.Dense(output_dim)
     ])
     return model
@@ -151,6 +197,16 @@ class MiniArchitectureEnsemble(tf.Module):
 
         self.performance_weights = PerformanceWeights(self.models, grad_dir)
 
+        self.current_model_minibatch = None
+
+    def set_new_model_minibatch(self):
+        """
+        Set a new minibatch of models for the ensemble.
+        """
+        mlp_model_indices = np.random.choice(self.mlp_count, self.mlp_batch_size, replace=False)
+        cnn_model_indices = self.mlp_count + np.random.choice(self.cnn_count, self.cnn_batch_size, replace=False)
+        self.current_model_minibatch = np.concatenate((mlp_model_indices, cnn_model_indices))
+
     def _ensemble_filter(self, predictions: dict) -> tf.Tensor:
         """
         Construct probability distribution from model predictions.
@@ -168,7 +224,7 @@ class MiniArchitectureEnsemble(tf.Module):
         probs_tensor = tf.stack(probs_list, axis=0)  # Shape: (num_models, batch_size, num_actions)
         return probs_tensor
 
-    def call_ensemble(self, X, training=False):
+    def call_ensemble_voting(self, X, training=False):
         """
         Forward pass through the ensemble.
 
@@ -179,14 +235,11 @@ class MiniArchitectureEnsemble(tf.Module):
         Returns:
             tuple: (action, probs, selected_model_indices)
         """
-        # Select random indices for MLP and CNN models
-        mlp_indices = np.random.choice(self.mlp_count, self.mlp_batch_size, replace=False)
-        cnn_indices = self.mlp_count + np.random.choice(self.cnn_count, self.cnn_batch_size, replace=False)
-        minibatch_indices = np.concatenate([mlp_indices, cnn_indices])
+        assert self.current_model_minibatch is not None, "Model minibatch not set."
 
         # Obtain predictions from the selected models
         preds = {}
-        for i in minibatch_indices:
+        for i in self.current_model_minibatch:
             model = self.models[i]
             preds[i] = model(X, training=training)
 
@@ -199,4 +252,4 @@ class MiniArchitectureEnsemble(tf.Module):
         # Select the action with the highest average probability for each sample in the batch
         action = tf.argmax(avg_probs, axis=-1).numpy()
 
-        return action, ensemble_probs, preds, minibatch_indices
+        return action, ensemble_probs, preds

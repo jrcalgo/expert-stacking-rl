@@ -9,7 +9,7 @@ from copy import deepcopy
 import threading
 
 from utils import load_hyperparams, combined_shape
-from network_ensemble import MiniArchitectureEnsemble
+from nn_ensemble import MiniArchitectureEnsemble
 
 ensemble, hyperparams = load_hyperparams('dqn')
 
@@ -38,8 +38,6 @@ class EnsembleDQN(tf.Module):
                  padding: int = ensemble['padding'],
                  mlp_count: int = ensemble['mlp_count'],
                  cnn_count: int = ensemble['cnn_count'],
-                 mlp_dropout: float = ensemble['mlp_dropout'],
-                 cnn_dropout: float = ensemble['cnn_dropout'],
                  mlp_batch_size: int = ensemble['mlp_batch_size'],
                  cnn_batch_size: int = ensemble['cnn_batch_size'],
                  grad_dir: str = "./runtime_models" 
@@ -71,12 +69,11 @@ class EnsembleDQN(tf.Module):
         self._target_update_freq = target_update_freq
 
         ### NNs and Optimizers
-        self._ensemble_model = MiniArchitectureEnsemble(mlp_input_dim, cnn_input_dim, action_dim, initial_seed, kernel_size,
-                                                        stride, padding, mlp_count, cnn_count, mlp_dropout, cnn_dropout,
-                                                        mlp_batch_size)
-        self._target_model = deepcopy(self._ensemble_model)
+        self._Q_ensemble_model = MiniArchitectureEnsemble(mlp_input_dim, cnn_input_dim, action_dim, initial_seed, kernel_size,
+                                                        stride, padding, mlp_count, cnn_count, mlp_batch_size, cnn_batch_size, grad_dir)
+        self._target_model = deepcopy(self._Q_ensemble_model)
 
-        self._model_optimizers = [keras.optimizers.Adam(model.parameters(), lr=q_lr) for model in self._ensemble_model.models]
+        self._model_optimizers = [keras.optimizers.Adam(model.parameters(), lr=q_lr) for model in self._Q_ensemble_model.models]
         self._target_optimizers = [keras.optimizers.Adam(model.parameters(), lr=q_lr) for model in self._target_model.models]
 
         ### Replay buffer
@@ -100,12 +97,11 @@ class EnsembleDQN(tf.Module):
             return self.env.action_space.sample()
         else:
             # choose most popular/probable/argmax action
-            return self._ensemble_model.call_ensemble(obs)
+            return self._Q_ensemble_model.call_ensemble_voting(obs)
 
     def step(self, obs: tf.Tensor):
         action = self.select_action(obs)[0]
         env_return = self.env.step(action)
-
 
     def train_n_epochs(self, n_epochs):
         # initialize replay buffer

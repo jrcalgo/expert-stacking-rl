@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-from network_ensemble import MiniArchitectureEnsemble
+from nn_ensemble import MiniArchitectureEnsemble
 
 
 def combined_shape(length, shape=None):
