@@ -1,4 +1,7 @@
 import json
+import os
+
+import numpy as np
 
 
 def load_hyperparams(algorithm: str):
@@ -10,11 +13,14 @@ def load_hyperparams(algorithm: str):
     """
     algo = algorithm.upper()
 
+    current_dir = os.path.dirname(__file__)
+    hyperparams_path = os.path.join(current_dir, 'hyperparams.json')
+
     ensemble_params = None
     algorithm_params = None
-    with open('hyperparams.json') as f:
+    with open(hyperparams_path, 'r') as f:
         hyperparams = json.load(f)
-        ensemble_params = hyperparams['MiniArchEnsemble']
+        ensemble_params = hyperparams['ExpertStackingEncoder']
         algorithm_params = hyperparams[algo]
 
     return ensemble_params, algorithm_params

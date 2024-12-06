@@ -1,20 +1,31 @@
-import torch
-import numpy as np
+import tensorflow as tf
+import gymnasium as gym
+from utils import load_hyperparams
 
-from nn_ensemble import MiniArchitectureEnsemble
-
-
-def combined_shape(length, shape=None):
-    if shape is None:
-        return (length,)
-    return (length, shape) if np.isscalar(shape) else (length, *shape)
+ensemble, hyperparams = load_hyperparams('ddqn')
 
 
-
-class EnsemblePPO:
-    def __init__(self):
-        
+class EnsembleDDQN(tf.Module):
+    def __init__(self,
+                 env: gym.Env,
+                 mlp_input_size,
+                 mlp_input_dim,
+                 cnn_input_size,
+                 cnn_input_dim,
+                 mlp_activations,
+                 cnn_activations,
+                 action_dim,
+                 buffer_size,
+                 ):
         super().__init__()
 
-    def train_one_epoch(self):
+    def store_transition(self):
+
+    def get_buffer_batch(self):
+
+    def step(self):
+
+    def compute_q_loss(self):
+
+    def train_models(self, epoch_num):
         
