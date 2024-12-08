@@ -21,7 +21,6 @@ import numpy as np
 import tensorflow as tf
 from keras import Input
 from tensorflow import keras
-import os
 
 #
 # def buffer_bagging(models: list[keras.Model], X: tf.Tensor, y: tf.Tensor, performance_weights: np.ndarray):
@@ -36,6 +35,44 @@ import os
 #     """
 #     for i, model in enumerate(models):
 #         model.train_on_batch(X, y, sample_weight=performance_weights[i])
+
+
+def aggregate_expert_outputs(expert_q_values, method='average', weights=None) -> tf.Tensor:
+    """
+    Aggregates the Q-values from multiple experts using averaging without altering tensor shape.
+
+    Parameters:
+    - expert_values: Tensor of shape (batch_size, num_experts, act_dim)
+    - method: Aggregation method ('average', 'weighted_average', 'max')
+    - weights: Optional Tensor of shape (num_experts,) for weighted averaging
+
+    Returns:
+    - aggregated_val: Tensor of shape (batch_size, num_experts, act_dim)
+    """
+    if method == 'average':
+        # Compute the average Q-value for each action across all experts
+        aggregated_val = tf.reduce_mean(expert_q_values, axis=1, keepdims=True)  # Shape: [batch_size, 1, act_dim]
+    elif method == 'weighted_average':
+        if weights is None:
+            raise ValueError("Weights must be provided for weighted_average aggregation.")
+        # Normalize weights
+        weights = tf.cast(weights, dtype=expert_q_values.dtype)
+        weights = weights / tf.reduce_sum(weights)
+        weights = tf.reshape(weights, [1, -1, 1])  # Shape: [1, num_experts, 1]
+        # Apply weights
+        weighted_val = expert_q_values * weights  # Shape: [batch_size, num_experts, act_dim]
+        mean_val = tf.reduce_sum(weighted_val, axis=1, keepdims=True)  # Shape: [batch_size, 1, act_dim]
+        # Broadcast the mean to all experts
+        aggregated_val = tf.tile(mean_val, [1, tf.shape(expert_q_values)[1], 1])  # Shape: [batch_size, num_experts, act_dim]
+    elif method == 'max':
+        # Compute the maximum Q-value for each action across all experts
+        max_val = tf.reduce_max(expert_q_values, axis=1, keepdims=True)  # Shape: [batch_size, 1, act_dim]
+        # Broadcast the max to all experts
+        aggregated_val = tf.tile(max_val, [1, tf.shape(expert_q_values)[1], 1])  # Shape: [batch_size, num_experts, act_dim]
+    else:
+        raise ValueError(f"Unknown aggregation method: {method}")
+
+    return aggregated_val
 
 
 def expert_MLP(input_dim: int, output_dim: int, seed: int, activation: list[str]):
@@ -55,9 +92,8 @@ def expert_MLP(input_dim: int, output_dim: int, seed: int, activation: list[str]
     with tf.device('/GPU:0'):
         model = keras.Sequential([
             Input(shape=(input_dim,)),
-            keras.layers.Dense(8, activation=activation[0]),
-            keras.layers.Dense(4, activation=activation[1]),
-            keras.layers.Dense(2, activation=activation[2]),
+            keras.layers.Dense(int(input_dim*1.5), activation=activation[0]),
+            keras.layers.Dense(int(input_dim), activation=activation[1]),
             keras.layers.Dense(output_dim)
         ])
     return model
@@ -84,16 +120,14 @@ def expert_CNN(input_shape: tuple, output_dim: int, kernel_size: int, stride: in
             Input(shape=input_shape),
             keras.layers.Conv2D(24, kernel_size, strides=stride, padding=padding, activation=activation[0]),
             keras.layers.MaxPooling2D(pool_size=(2, 2), strides=stride),
-            keras.layers.Conv2D(12, kernel_size, strides=stride, padding=padding, activation=activation[1]),
-            keras.layers.MaxPooling2D(pool_size=(2, 2), strides=stride),
             keras.layers.Flatten(),
-            keras.layers.Dense(6, activation=activation[2]),
+            keras.layers.Dense(6, activation=activation[1]),
             keras.layers.Dense(output_dim)
         ])
     return model
 
 
-def stacking_encoder(input_dim: int, output_dim: int, seed: int, activation: str = 'relu'):
+def stacking_encoder(input_dim: int, action_dim: int, seed: int, activation: str = 'relu'):
     """
     Defines a simple meta-learning encoder.
     Args:
@@ -108,17 +142,17 @@ def stacking_encoder(input_dim: int, output_dim: int, seed: int, activation: str
     tf.random.set_seed(seed)
     with tf.device('/GPU:0'):
         model = keras.Sequential([
-            keras.layers.Dense(input_dim, activation=activation),
-            keras.layers.Dense(20, activation=activation),
-            keras.layers.Dense(15, activation=activation),
-            keras.layers.Dense(10, activation=activation),
-            keras.layers.Dense(5, activation=activation),
-            keras.layers.Dense(output_dim)
+            Input(shape=(input_dim,)),
+            keras.layers.Dense(32, activation='linear'),
+            keras.layers.Dense(24, activation='linear'),
+            keras.layers.Dense(16, activation=activation),
+            keras.layers.Dense(8, activation=activation),
+            keras.layers.Dense(action_dim)
         ])
     return model
 
 
-class ExpertStackingEncoder(tf.Module):
+class ExpertStackingEncoder(keras.Model):
     """
     An ensemble of probabilistic miniMLP and miniCNN models with varied activations and performance-based weighting.
     """
@@ -126,7 +160,7 @@ class ExpertStackingEncoder(tf.Module):
                  mlp_activations: list[list[str]],
                  cnn_activations: list[list[str]],
                  mlp_input_dim,
-                 cnn_input_dim,
+                 cnn_input_shape,
                  act_dim,
                  initial_seed=0,
                  kernel_size=3,
@@ -136,38 +170,59 @@ class ExpertStackingEncoder(tf.Module):
                  cnn_count=5,
                  mlp_batch_size=3,
                  cnn_batch_size=3,
-                 grad_dir: str = "./runtime_models"):
-        super(ExpertStackingEncoder, self).__init__()
+                 grad_dir: str = "./runtime_models",
+                 **kwargs):
+        super(ExpertStackingEncoder, self).__init__(**kwargs)
         tf.random.set_seed(initial_seed)
         numpy_rng = np.random.RandomState(initial_seed)
+
+        # Default activations if not provided
+        if mlp_activations is None:
+            self.mlp_activations = [['relu', 'sigmoid'] for _ in range(mlp_count)]
+        else:
+            self.mlp_activations = mlp_activations
+        if cnn_activations is None:
+            self.cnn_activations = [['tanh', 'relu'] for _ in range(cnn_count)]
+        else:
+            self.cnn_activations = cnn_activations
 
         assert mlp_batch_size <= mlp_count, "MLP batch size cannot exceed the number of MLP models."
         assert cnn_batch_size <= cnn_count, "CNN batch size cannot exceed the number of CNN models."
 
-        assert len(mlp_activations) == mlp_count, "MLP activations must be specified for each MLP model."
-        assert len(cnn_activations) == cnn_count, "CNN activations must be specified for each CNN model."
-        for act in mlp_activations:
-            assert len(act) == 3, "MLP activations must have 3 functions per model."
-        for act in cnn_activations:
-            assert len(act) == 3, "CNN activations must have 3 functions per model."
+        assert len(self.mlp_activations) == mlp_count, "MLP activations must be specified for each MLP model."
+        assert len(self.cnn_activations) == cnn_count, "CNN activations must be specified for each CNN model."
+        for act in self.mlp_activations:
+            assert len(act) >= 2, "MLP activations must have 2 functions per model."
+        for act in self.cnn_activations:
+            assert len(act) >= 3, "CNN activations must have 3 functions per model."
 
+        self.mlp_input_dim = mlp_input_dim
+        self.cnn_input_shape = cnn_input_shape
+        self.act_dim = act_dim
+        self.initial_seed = initial_seed
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
         self.mlp_count = mlp_count
         self.cnn_count = cnn_count
         self.expert_count = mlp_count + cnn_count
         self.mlp_batch_size = mlp_batch_size
         self.cnn_batch_size = cnn_batch_size
+        self.grad_dir = grad_dir
 
         # Random seeds for each model
-        mlp_seeds = numpy_rng.randint(0, 2**32, size=mlp_count)
-        cnn_seeds = numpy_rng.randint(0, 2**32, size=cnn_count)
+        self.mlp_seeds = numpy_rng.randint(0, 2**32, size=mlp_count)
+        self.cnn_seeds = numpy_rng.randint(0, 2**32, size=cnn_count)
 
         # Initialize expert model blocks
-        self.mlps = [expert_MLP(mlp_input_dim, act_dim, mlp_seeds.item(i), mlp_activations[i]) for i in range(self.mlp_count)]
-        self.cnns = [expert_CNN(cnn_input_dim, act_dim, kernel_size, stride, cnn_seeds.item(i), cnn_activations[i], padding)
+        self.mlps = [expert_MLP(mlp_input_dim, act_dim, self.mlp_seeds.item(i), mlp_activations[i]) for i in range(self.mlp_count)]
+        self.cnns = [expert_CNN(cnn_input_shape, act_dim, kernel_size, stride, self.cnn_seeds.item(i), cnn_activations[i], padding)
                      for i in range(self.cnn_count)]
-        self.models = self.mlps + self.cnns
+        self.experts = self.mlps + self.cnns
 
-        self.stack_encoder = stacking_encoder((mlp_count * act_dim) + (cnn_count * act_dim), act_dim, initial_seed)
+        # Initialize stack encoder
+        encoder_input_size: int = act_dim + mlp_input_dim
+        self.stack_encoder = stacking_encoder(encoder_input_size, act_dim, initial_seed)
 
         # self.performance_weights = PerformanceWeights(self.models, grad_dir)
 
@@ -185,11 +240,17 @@ class ExpertStackingEncoder(tf.Module):
         cnn_model_indices = self.mlp_count + np.random.choice(self.cnn_count, self.cnn_batch_size, replace=False)
 
         # Set the current expert minibatch and mask
+        old_expert_minibatch = self.current_expert_minibatch
         self.current_expert_minibatch = np.concatenate((mlp_model_indices, cnn_model_indices))
-        self.current_expert_mask = np.zeros(len(self.models), dtype=bool)
+        self.current_expert_mask = np.zeros(len(self.experts), dtype=bool)
         self.current_expert_mask[self.current_expert_minibatch] = True
 
-    def _expert_block(self, mlp_obs, cnn_obs):
+        if np.array_equal(self.current_expert_minibatch, old_expert_minibatch):
+            print(f"New expert minibatch: {self.current_expert_minibatch}")
+            return True
+        return False
+
+    def _expert_block(self, mlp_obs, cnn_obs, voting: bool = True):
         """
         Processes observations through all experts and applies the current expert mask.
         """
@@ -215,32 +276,48 @@ class ExpertStackingEncoder(tf.Module):
         mask = tf.tile(mask, [batch_size, 1, 1])  # Shape: [batch_size, num_experts, 1]
 
         # Broadcast mask to [batch_size, num_experts, act_dim]
-        act_dim = tf.shape(stacked_experts)[-1]
-        mask = tf.broadcast_to(mask, [batch_size, self.expert_count, act_dim])  # Shape: [batch_size, num_experts, act_dim]
+        mask = tf.broadcast_to(mask, [batch_size, self.expert_count, self.act_dim])  # Shape: [batch_size, num_experts, act_dim]
 
         # Apply mask: Zero out predictions of inactive experts
-        masked_experts = tf.where(mask, stacked_experts, tf.zeros_like(stacked_experts))  # Shape: [batch_size, num_experts, act_dim]
+        masked_experts = tf.where(mask, stacked_experts, 1e-6 * tf.ones_like(stacked_experts))  # Shape: [batch_size, num_experts, act_dim]
 
-        # Flatten masked experts back to [batch_size, num_experts * act_dim]
-        masked_preds = tf.reshape(masked_experts, [batch_size, -1])  # Shape: [batch_size, num_experts * act_dim]
+        # Aggregate expert outputs through voting method
+        if voting:
+            vote_dist = self._expert_vote(masked_experts)  # Shape: [batch_size, num_experts * act_dim]
+            # Flatten masked experts back to [batch_size, num_experts * act_dim]
+            masked_preds = tf.reshape(vote_dist, [batch_size, -1])  # Shape: [batch_size, num_experts * act_dim]
+        else:
+            masked_preds = tf.reshape(masked_experts, [batch_size, -1])  # Shape: [batch_size, num_experts * act_dim]
 
         return masked_preds
 
-    def _stack_encoder(self, action_vote_distributions: tf.Tensor):
+    def _expert_vote(self, masked_predictions: tf.Tensor):
+        """
+        Performs a voting operation on the expert predictions.
+        """
+
+        expert_votes = aggregate_expert_outputs(masked_predictions, method='max')  # Shape: [batch_size, act_dim]
+
+        return expert_votes
+
+    def _stack_encoder(self, expert_vote_distribution: tf.Tensor, original_obs: tf.Tensor):
         """
         Defines the meta learner neural network that aggregates the expert probability outputs.
 
         Args:
-            action_vote_distributions (tf.Tensor): The action vote distributions concatenated from the expert block.
+            expert_vote_distribution (tf.Tensor): The action vote distributions concatenated from the expert block.
+            original_obs (tf.Tensor): The original observation tensor.
 
         Returns:
             tf.Tensor: The output tensor from the meta learner.
         """
-        encoder_qs = self.stack_encoder(action_vote_distributions)
+        # Concatenate the action vote distributions with the original observations
+        votes_and_obs: tf.Tensor = tf.concat([expert_vote_distribution, original_obs], axis=-1)
+        encoder_qs = self.stack_encoder(votes_and_obs)
 
         return encoder_qs
 
-    def forward(self, mlp_obs: tf.Tensor, cnn_obs: tf.Tensor):
+    def forward(self, mlp_obs: tf.Tensor, cnn_obs: tf.Tensor, voting: bool = True):
         """
         Forward pass through the ensemble.
 
@@ -254,12 +331,47 @@ class ExpertStackingEncoder(tf.Module):
         assert self.current_expert_minibatch is not None, "Model minibatch not set."
         assert self.current_expert_mask is not None, "Model mask not set."
 
-        expert_preds = self._expert_block(mlp_obs, cnn_obs)
-        flattened_expert_preds = tf.reshape(expert_preds, [mlp_obs.shape[0], -1])
+        expert_vote = self._expert_block(mlp_obs, cnn_obs, voting=voting)
+        flattened_expert_preds = tf.reshape(expert_vote, [mlp_obs.shape[0], -1])
 
-        q_vals = self._stack_encoder(flattened_expert_preds)
+        # Preprocess original observations
+        # Flatten CNN observations if necessary
+        if cnn_obs is not None:
+            flattened_cnn_obs = tf.reshape(cnn_obs, [cnn_obs.shape[0], -1])
+            original_obs = tf.concat([mlp_obs, flattened_cnn_obs], axis=1)  # Shape: [batch_size, mlp_input_dim + flattened_cnn_obs_dim]
+        else:
+            original_obs = mlp_obs  # Shape: [batch_size, mlp_input_dim]
 
-        return q_vals, expert_preds
+        original_obs = tf.cast(original_obs, tf.float32)
+
+        q_vals = self._stack_encoder(expert_vote, original_obs)
+
+        return q_vals, flattened_expert_preds
+
+    def get_config(self):
+        """
+        Returns the config of the model.
+
+        This is used for serialization.
+        """
+        config = super(ExpertStackingEncoder, self).get_config()
+        config.update({
+            'mlp_activations': self.mlp_activations,
+            'cnn_activations': self.cnn_activations,
+            'mlp_input_dim': self.mlp_input_dim,
+            'cnn_input_shape': self.cnn_input_shape,
+            'act_dim': self.act_dim,
+            'initial_seed': self.initial_seed,
+            'kernel_size': self.kernel_size,
+            'stride': self.stride,
+            'padding': self.padding,
+            'mlp_count': self.mlp_count,
+            'cnn_count': self.cnn_count,
+            'mlp_batch_size': self.mlp_batch_size,
+            'cnn_batch_size': self.cnn_batch_size,
+            'grad_dir': self.grad_dir,
+        })
+        return config
 
 
 # class PerformanceWeights:

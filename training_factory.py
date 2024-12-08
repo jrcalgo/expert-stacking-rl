@@ -52,7 +52,7 @@ class TrainingFactory:
             assert cnn_activations is not None, "CNN activations must be provided."
 
         # Initialize the environment
-        self.env = gym.make(env_name, render_mode="human")
+        self.env = gym.make(env_name)
 
         # Extract observation and action space dimensions
         obs_space = self.env.observation_space
@@ -226,14 +226,14 @@ class TrainingFactory:
         mlp_obs, cnn_obs = None, None
 
         # Extract MLP observation
-        if self.hyperparams['mlp_count'] != 0:
+        if self.hyperparams['mlp_count'] > 0:
             if self.learner._mlp_input_dim is not None:
                 mlp_obs = self._preprocess_mlp(obs)
             else:
                 mlp_obs = None
 
         # Extract CNN observation
-        if self.hyperparams['cnn_count'] != 0:
+        if self.hyperparams['cnn_count'] > 0:
             if self.learner._cnn_input_dim is not None:
                 cnn_obs = self._preprocess_cnn(obs)
             else:

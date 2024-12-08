@@ -57,31 +57,41 @@ class SumTree:
 
 
 class PrioritizedReplayBuffer:
-    def __init__(self, capacity, mlp_input_dim, cnn_input_dim, alpha=0.6):
+    def __init__(self, capacity, mlp_count, cnn_count, mlp_input_dim, cnn_input_dim, alpha=0.6):
         self.capacity = capacity
         self.alpha = alpha
         self.tree = SumTree(capacity)
         self.max_priority = 1.0  # Initial max priority
 
+        self.mlp_input_dim = mlp_input_dim
+        self.cnn_input_dim = cnn_input_dim
+
+        self.mlp_count = mlp_count
+        self.cnn_count = cnn_count
+
         # Initialize buffers
-        self.mlp_obs_buffer = np.zeros(combined_shape(capacity, mlp_input_dim), dtype=np.float32)  # To be defined properly
-        self.cnn_obs_buffer = np.zeros(combined_shape(capacity, cnn_input_dim), dtype=np.float32)
+        if mlp_count is not None:
+            self.mlp_obs_buffer = np.zeros(combined_shape(capacity, mlp_input_dim), dtype=np.float32)
+            self.mlp_next_obs_buffer = np.zeros(combined_shape(capacity, mlp_input_dim), dtype=np.float32)
+        if cnn_count is not None:
+            self.cnn_obs_buffer = np.zeros(combined_shape(capacity, cnn_input_dim), dtype=np.float32)
+            self.cnn_next_obs_buffer = np.zeros(combined_shape(capacity, cnn_input_dim), dtype=np.float32)
         self.act_buffer = np.zeros(combined_shape(capacity), dtype=np.int32)
         self.rew_buffer = np.zeros(combined_shape(capacity), dtype=np.float32)
-        self.mlp_next_obs_buffer = np.zeros(combined_shape(capacity, mlp_input_dim), dtype=np.float32)
-        self.cnn_next_obs_buffer = np.zeros(combined_shape(capacity, cnn_input_dim), dtype=np.float32)
         self.terminal_buffer = np.zeros(combined_shape(capacity), dtype=bool)
 
         self.size = 0
 
     def store_transition(self, mlp_obs, cnn_obs, act, rew, mlp_next_obs, cnn_next_obs, done):
         idx = self.tree.data_ptr
-        self.mlp_obs_buffer[idx] = mlp_obs
-        self.cnn_obs_buffer[idx] = cnn_obs
+        if self.mlp_count is not None:
+            self.mlp_obs_buffer[idx] = mlp_obs
+            self.mlp_next_obs_buffer[idx] = mlp_next_obs
+        if self.cnn_count is not None:
+            self.cnn_obs_buffer[idx] = cnn_obs
+            self.cnn_next_obs_buffer[idx] = cnn_next_obs
         self.act_buffer[idx] = act
         self.rew_buffer[idx] = rew
-        self.mlp_next_obs_buffer[idx] = mlp_next_obs
-        self.cnn_next_obs_buffer[idx] = cnn_next_obs
         self.terminal_buffer[idx] = done
 
         # Assign maximum priority to new transition
@@ -102,7 +112,7 @@ class PrioritizedReplayBuffer:
             batch.append(data_idx)
             idxs.append(leaf_idx)
         sampling_probabilities = priorities / self.tree.total_priority
-        is_weight = np.power(self.capacity * sampling_probabilities, -beta)
+        is_weight = np.power(self.capacity * sampling_probabilities + 1e-4, -beta)
         is_weight /= is_weight.max()
         return batch, is_weight
 
@@ -110,6 +120,15 @@ class PrioritizedReplayBuffer:
         for leaf_idx, priority in zip(leaf_idxs, priorities):
             self.tree.update(leaf_idx, priority ** self.alpha)
             self.max_priority = max(self.max_priority, priority)
+
+    def reset_buffer(self):
+        self.mlp_obs_buffer = np.zeros(combined_shape(self.capacity, self.mlp_input_dim), dtype=np.float32)
+        self.cnn_obs_buffer = np.zeros(combined_shape(self.capacity, self.cnn_input_dim), dtype=np.float32)
+        self.act_buffer = np.zeros(combined_shape(self.capacity), dtype=np.int32)
+        self.rew_buffer = np.zeros(combined_shape(self.capacity), dtype=np.float32)
+        self.mlp_next_obs_buffer = np.zeros(combined_shape(self.capacity, self.mlp_input_dim), dtype=np.float32)
+        self.cnn_next_obs_buffer = np.zeros(combined_shape(self.capacity, self.cnn_input_dim), dtype=np.float32)
+        self.terminal_buffer = np.zeros(combined_shape(self.capacity), dtype=bool)
 
 
 class EnsembleDQN(tf.Module):
@@ -171,6 +190,9 @@ class EnsembleDQN(tf.Module):
         self._train_update_freq = train_update_freq
         self._target_update_freq = target_update_freq
 
+        self._mlp_count = mlp_count
+        self._cnn_count = cnn_count
+
         self._expert_rotation_freq = expert_rotation_freq
 
         # PER parameters
@@ -182,7 +204,7 @@ class EnsembleDQN(tf.Module):
             mlp_activations=mlp_activations,
             cnn_activations=cnn_activations,
             mlp_input_dim=mlp_input_dim,
-            cnn_input_dim=cnn_input_dim,
+            cnn_input_shape=cnn_input_dim,
             act_dim=action_dim,
             initial_seed=initial_seed,
             kernel_size=kernel_size,
@@ -196,18 +218,32 @@ class EnsembleDQN(tf.Module):
         )
 
         # Target model: same architecture, updated periodically
-        self._target_model = deepcopy(self.ensemble_model)
+        self._target_model = ExpertStackingEncoder(
+            mlp_activations=mlp_activations,
+            cnn_activations=cnn_activations,
+            mlp_input_dim=mlp_input_dim,
+            cnn_input_shape=cnn_input_dim if cnn_count > 0 else None,
+            act_dim=action_dim,
+            initial_seed=initial_seed,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            mlp_count=mlp_count,
+            cnn_count=cnn_count,
+            mlp_batch_size=mlp_batch_size,
+            cnn_batch_size=cnn_batch_size,
+            grad_dir=grad_dir
+        )
+
         self.update_target_model()
 
         # One optimizer for all models inside Q_ensemble_model
-        all_train_vars = []
-        for m in self.ensemble_model.models:
-            all_train_vars.extend(m.trainable_variables)
-        all_train_vars.extend(self.ensemble_model.stack_encoder.trainable_variables)
-        self._optimizer = keras.optimizers.Adam(learning_rate=q_lr)
+        self._expert_optimizer = keras.optimizers.Adam(learning_rate=q_lr)
+        self._encoder_optimizer = keras.optimizers.Adam(learning_rate=q_lr)
 
         # Initialize Prioritized Replay Buffer
-        self.replay_buffer = PrioritizedReplayBuffer(capacity=self._buffer_size, mlp_input_dim=mlp_input_dim, cnn_input_dim=cnn_input_dim, alpha=self.alpha)
+        self.replay_buffer = PrioritizedReplayBuffer(capacity=self._buffer_size, mlp_count=mlp_count, cnn_count=cnn_count,
+                                                     mlp_input_dim=mlp_input_dim, cnn_input_dim=cnn_input_dim, alpha=self.alpha)
 
         self.epochs = 0
         self.traj = 0
@@ -240,22 +276,37 @@ class EnsembleDQN(tf.Module):
     def compute_q_loss(self, mlp_obs_tf, cnn_obs_tf, acts_tf, rews_tf, mlp_next_obs_tf, cnn_next_obs_tf, dones_tf, is_weights):
         # Compute target values
         # Q'(s', a')
-        next_q_vals = self._target_model.forward(mlp_next_obs_tf, cnn_next_obs_tf)[0]
-        max_next_q = tf.reduce_max(next_q_vals, axis=-1)
-        targets = rews_tf + self._gamma * (1.0 - dones_tf) * max_next_q
+        next_q_vals, _ = self._target_model.forward(mlp_next_obs_tf, cnn_next_obs_tf)
+        _, next_expert_vals = self._target_model.forward(mlp_next_obs_tf, cnn_next_obs_tf, voting=False)
 
-        # Compute predicted Q(s,a)
-        q_vals = self.ensemble_model.forward(mlp_obs_tf, cnn_obs_tf)[0]
+        # Compute max_a Q'(s', a')
+        max_next_q = tf.reduce_max(next_q_vals, axis=-1)
+        ensemble_targets = rews_tf + (self._gamma * (1.0 - dones_tf)) * max_next_q
+
+        # Compute latent expert Q'(s', a')
+        max_expert_vals = tf.reduce_max(next_expert_vals, axis=-1)
+        expert_targets = rews_tf + (self._gamma * (1.0 - dones_tf)) * max_expert_vals
+
+        # Compute encoder target
+        encoder_targets = ensemble_targets - expert_targets
+
+        # Compute predicted values
+        # Q(s,a)
+        q_vals, expert_preds = self.ensemble_model.forward(mlp_obs_tf, cnn_obs_tf)
+
         # Gather the Q-values for the chosen actions
         batch_indices = tf.range(self._batch_size, dtype=tf.int32)
         chosen_q = tf.gather_nd(q_vals, tf.stack([batch_indices, acts_tf], axis=1))
 
         # Compute TD errors
-        td_errors = targets - chosen_q
+        ensemble_loss = ensemble_targets - chosen_q
+        encoder_loss = encoder_targets - chosen_q
+        expert_loss = expert_targets - chosen_q
 
-        # Huber loss (more robust to outliers)
-        loss = tf.reduce_mean(is_weights * tf.square(td_errors))  # Using MSE; you can switch to Huber if preferred
-        return loss, tf.abs(td_errors)
+        # MSE losses
+        encoder_loss = tf.reduce_mean(is_weights * tf.square(encoder_loss))
+        expert_loss = tf.reduce_mean(is_weights * tf.square(expert_loss))
+        return encoder_loss, expert_loss, tf.abs(ensemble_loss)
 
     def train_models(self, epoch_num: int):
         if self.replay_buffer.size < self._batch_size:
@@ -264,46 +315,57 @@ class EnsembleDQN(tf.Module):
 
         mlp_obs, cnn_obs, acts, rews, mlp_next_obs, cnn_next_obs, dones, batch_leaf_idxs, is_weights = self.get_buffer_batch()
 
+        mlp_obs_tf, mlp_next_obs_tf = None, None
+        cnn_obs_tf, cnn_next_obs_tf = None, None
         # Convert to tensors
-        mlp_obs_tf = tf.convert_to_tensor(mlp_obs, dtype=tf.float32)
-        cnn_obs_tf = tf.convert_to_tensor(cnn_obs, dtype=tf.float32)
+        if self._mlp_count > 0:
+            mlp_obs_tf = tf.convert_to_tensor(mlp_obs, dtype=tf.float32)
+            mlp_next_obs_tf = tf.convert_to_tensor(mlp_next_obs, dtype=tf.float32)
+        if self._cnn_count > 0:
+            cnn_obs_tf = tf.convert_to_tensor(cnn_obs, dtype=tf.float32)
+            cnn_next_obs_tf = tf.convert_to_tensor(cnn_next_obs, dtype=tf.float32)
         acts_tf = tf.convert_to_tensor(acts, dtype=tf.int32)
         rews_tf = tf.convert_to_tensor(rews, dtype=tf.float32)
-        mlp_next_obs_tf = tf.convert_to_tensor(mlp_next_obs, dtype=tf.float32)
-        cnn_next_obs_tf = tf.convert_to_tensor(cnn_next_obs, dtype=tf.float32)
         dones_tf = tf.convert_to_tensor(dones, dtype=tf.float32)
         is_weights_tf = tf.convert_to_tensor(is_weights, dtype=tf.float32)
 
         for _ in range(self._train_q_iters):
-            with tf.GradientTape() as tape:
-                loss, td_errors = self.compute_q_loss(
+            with tf.GradientTape(persistent=True) as tape:
+                encoder_loss, expert_loss, td_errors = self.compute_q_loss(
                     mlp_obs_tf, cnn_obs_tf, acts_tf, rews_tf,
                     mlp_next_obs_tf, cnn_next_obs_tf, dones_tf, is_weights_tf
                 )
 
             # Gather trainable variables
-            all_train_vars = []
-            for m in self.ensemble_model.models:
-                all_train_vars.extend(m.trainable_variables)
-            all_train_vars.extend(self.ensemble_model.stack_encoder.trainable_variables)
+            expert_train_vars = []
+            for m in self.ensemble_model.experts:
+                expert_train_vars.extend(m.trainable_variables)
 
-            grads = tape.gradient(loss, all_train_vars)
-            grads, _ = tf.clip_by_global_norm(grads, clip_norm=1.0)
-            self._optimizer.apply_gradients(zip(grads, all_train_vars))
+            expert_grads = tape.gradient(expert_loss, expert_train_vars)
+            expert_grads, _ = tf.clip_by_global_norm(expert_grads, clip_norm=1.0)
+            self._expert_optimizer.apply_gradients(zip(expert_grads, expert_train_vars))
+
+            encoder_train_vars = self.ensemble_model.stack_encoder.trainable_variables
+            encoder_grads = tape.gradient(encoder_loss, encoder_train_vars)
+            encoder_grads, _ = tf.clip_by_global_norm(encoder_grads, clip_norm=1.0)
+            self._encoder_optimizer.apply_gradients(zip(encoder_grads, encoder_train_vars))
+
+            del tape
 
         # Update priorities
         td_errors_np = td_errors.numpy()
-        new_priorities = td_errors_np + 1e-6  # Small constant to avoid zero priority
+        td_errors_np = np.where(np.isfinite(td_errors_np), td_errors_np, 0.0)
+        new_priorities = td_errors_np + 1e-8  # Small constant to avoid zero priority
         self.replay_buffer.update_priorities(batch_leaf_idxs, new_priorities)
 
         if epoch_num % self._train_update_freq == 0:
             self.update_target_model()
 
         if epoch_num % self._expert_rotation_freq == 0:
-            self.ensemble_model.rotate_expert_minibatch()
+            result = self.ensemble_model.rotate_expert_minibatch()
 
     def update_target_model(self):
         # Copy weights from Q_model to target_model
-        for i, m in enumerate(self.ensemble_model.models):
-            self._target_model.models[i].set_weights(m.get_weights())
+        for i, m in enumerate(self.ensemble_model.experts):
+            self._target_model.experts[i].set_weights(m.get_weights())
         self._target_model.stack_encoder.set_weights(self.ensemble_model.stack_encoder.get_weights())
