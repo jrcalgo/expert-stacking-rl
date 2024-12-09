@@ -143,8 +143,8 @@ def stacking_encoder(input_dim: int, action_dim: int, seed: int, activation: str
     with tf.device('/GPU:0'):
         model = keras.Sequential([
             Input(shape=(input_dim,)),
-            keras.layers.Dense(32, activation='linear'),
-            keras.layers.Dense(24, activation='linear'),
+            keras.layers.Dense(32, activation=activation),
+            keras.layers.Dense(24, activation=activation),
             keras.layers.Dense(16, activation=activation),
             keras.layers.Dense(8, activation=activation),
             keras.layers.Dense(action_dim)
@@ -189,8 +189,8 @@ class ExpertStackingEncoder(keras.Model):
         assert mlp_batch_size <= mlp_count, "MLP batch size cannot exceed the number of MLP models."
         assert cnn_batch_size <= cnn_count, "CNN batch size cannot exceed the number of CNN models."
 
-        assert len(self.mlp_activations) == mlp_count, "MLP activations must be specified for each MLP model."
-        assert len(self.cnn_activations) == cnn_count, "CNN activations must be specified for each CNN model."
+        assert len(self.mlp_activations) >= mlp_count, "MLP activations must be specified for each MLP model."
+        assert len(self.cnn_activations) >= cnn_count, "CNN activations must be specified for each CNN model."
         for act in self.mlp_activations:
             assert len(act) >= 2, "MLP activations must have 2 functions per model."
         for act in self.cnn_activations:
@@ -250,7 +250,7 @@ class ExpertStackingEncoder(keras.Model):
             return True
         return False
 
-    def _expert_block(self, mlp_obs, cnn_obs, voting: bool = True):
+    def expert_block(self, mlp_obs, cnn_obs, voting: bool = True):
         """
         Processes observations through all experts and applies the current expert mask.
         """
@@ -283,7 +283,7 @@ class ExpertStackingEncoder(keras.Model):
 
         # Aggregate expert outputs through voting method
         if voting:
-            vote_dist = self._expert_vote(masked_experts)  # Shape: [batch_size, num_experts * act_dim]
+            vote_dist = self.expert_vote(masked_experts)  # Shape: [batch_size, num_experts * act_dim]
             # Flatten masked experts back to [batch_size, num_experts * act_dim]
             masked_preds = tf.reshape(vote_dist, [batch_size, -1])  # Shape: [batch_size, num_experts * act_dim]
         else:
@@ -291,16 +291,16 @@ class ExpertStackingEncoder(keras.Model):
 
         return masked_preds
 
-    def _expert_vote(self, masked_predictions: tf.Tensor):
+    def expert_vote(self, masked_predictions: tf.Tensor):
         """
         Performs a voting operation on the expert predictions.
         """
 
-        expert_votes = aggregate_expert_outputs(masked_predictions, method='max')  # Shape: [batch_size, act_dim]
+        expert_votes = aggregate_expert_outputs(masked_predictions, method='average')  # Shape: [batch_size, act_dim]
 
         return expert_votes
 
-    def _stack_encoder(self, expert_vote_distribution: tf.Tensor, original_obs: tf.Tensor):
+    def stacking(self, expert_vote_distribution: tf.Tensor, original_obs: tf.Tensor):
         """
         Defines the meta learner neural network that aggregates the expert probability outputs.
 
@@ -331,7 +331,7 @@ class ExpertStackingEncoder(keras.Model):
         assert self.current_expert_minibatch is not None, "Model minibatch not set."
         assert self.current_expert_mask is not None, "Model mask not set."
 
-        expert_vote = self._expert_block(mlp_obs, cnn_obs, voting=voting)
+        expert_vote = self.expert_block(mlp_obs, cnn_obs, voting=voting)
         flattened_expert_preds = tf.reshape(expert_vote, [mlp_obs.shape[0], -1])
 
         # Preprocess original observations
@@ -344,7 +344,7 @@ class ExpertStackingEncoder(keras.Model):
 
         original_obs = tf.cast(original_obs, tf.float32)
 
-        q_vals = self._stack_encoder(expert_vote, original_obs)
+        q_vals = self.stacking(expert_vote, original_obs)
 
         return q_vals, flattened_expert_preds
 

@@ -1,10 +1,8 @@
-# training_factory.py
-
 import gymnasium as gym
 import numpy as np
 from typing import Any, List, Tuple
 
-from ensemble_algorithms.ensemble_dqn import EnsembleDQN
+from ensemble_algorithms.ensemble_DQN import EnsembleDQN
 
 
 class TrainingFactory:
@@ -53,6 +51,7 @@ class TrainingFactory:
 
         # Initialize the environment
         self.env = gym.make(env_name)
+        self.env.reset(seed=self.seed)
 
         # Extract observation and action space dimensions
         obs_space = self.env.observation_space
@@ -93,7 +92,7 @@ class TrainingFactory:
             raise NotImplementedError(f"Unsupported action space type: {type(action_space)}")
 
         # Initialize the agent based on the algorithm
-        if self.algorithm == 'DQN':
+        if self.algorithm == 'ENSEMBLE_DQN':
             self.learner = EnsembleDQN(
                 env=self.env,
                 mlp_input_size=mlp_input_size,
@@ -110,7 +109,7 @@ class TrainingFactory:
                 cnn_batch_size=self.hyperparams['cnn_batch_size'] if 'cnn_batch_size' in self.hyperparams else 1,
                 expert_rotation_freq=self.hyperparams['expert_rotation_freq'] if 'expert_rotation_freq' in self.hyperparams else 16,
             )
-        elif self.algorithm == 'DDQN':
+        elif self.algorithm == 'ENSEMBLE_DDQN':
             self.learner = EnsembleDDQN(
                 env=self.env,
                 mlp_input_size=mlp_input_size,
@@ -127,7 +126,7 @@ class TrainingFactory:
                 cnn_batch_size=self.hyperparams['cnn_batch_size'] if 'cnn_batch_size' in self.hyperparams else 1,
                 expert_rotation_freq=self.hyperparams['expert_rotation_freq'] if 'expert_rotation_freq' in self.hyperparams else 16,
             )
-        elif self.algorithm == 'PPO':
+        elif self.algorithm == 'ENSEMBLE_PPO':
             self.learner = EnsemblePPO(
                 env=self.env,
                 mlp_input_size=mlp_input_size,
@@ -205,7 +204,7 @@ class TrainingFactory:
 
             # Train models according to training frequency
             if self.learner.traj > 0 and self.learner.traj % self.learner._traj_per_epoch == 0:
-                if self.learner._batch_size <= self.learner.replay_buffer.size:
+                if self.learner.traj % self.learner._train_update_freq == 0:
                     self.learner.train_models(epoch_num=self.epoch)
 
         print(f"Episode completed: Total Reward = {total_reward}, Epoch Steps = {step_count}")

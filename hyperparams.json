@@ -16,7 +16,7 @@
     },
     "DQN": {
         "batch_size": 32,
-        "traj_per_epoch": 64,
+        "traj_per_epoch": 128,
         "gamma": 0.98,
         "epsilon": 1.0,
         "epsilon_min": 0.1,
@@ -24,9 +24,21 @@
         "q_lr": 1e-3,
         "train_q_iters": 80,
         "train_update_freq": 16,
-        "target_update_freq": 128
+        "target_update_freq": 64
     },
-    "DDQN": {
+    "ENSEMBLE_DQN": {
+        "batch_size": 32,
+        "traj_per_epoch": 128,
+        "gamma": 0.98,
+        "epsilon": 1.0,
+        "epsilon_min": 0.1,
+        "epsilon_decay": 0.0001,
+        "q_lr": 1e-3,
+        "train_q_iters": 80,
+        "train_update_freq": 16,
+        "target_update_freq": 64
+    },
+    "ENSEMBLE_DDQN": {
         "batch_size": 32,
         "traj_per_epoch": 16,
         "gamma": 0.98,
@@ -38,7 +50,7 @@
         "train_update_freq": 16,
         "target_update_freq": 16
     },
-    "PPO": {
+    "ENSEMBLE_PPO": {
         "traj_per_epoch": 16,
         "clip_ratio": 0.2,
         "gamma": 0.98,
