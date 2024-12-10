@@ -20,6 +20,7 @@ class TrainingFactory:
             replay_buffer_size: int,
             mlp_activations: List[List[str]] = None,
             cnn_activations: List[List[str]] = None,
+            tensorboard_logging: bool = False,
             hyperparams: dict = None
     ):
         """
@@ -94,6 +95,7 @@ class TrainingFactory:
         # Initialize the agent based on the algorithm
         if self.algorithm == 'ENSEMBLE_DQN':
             self.learner = EnsembleDQN(
+                tensorboard_logging=tensorboard_logging,
                 env=self.env,
                 mlp_input_size=mlp_input_size,
                 mlp_input_dim=mlp_input_dim,
@@ -208,6 +210,8 @@ class TrainingFactory:
                     self.learner.train_models(epoch_num=self.epoch)
 
         print(f"Episode completed: Total Reward = {total_reward}, Epoch Steps = {step_count}")
+        if self.learner.logger is not None:
+            self.learner.logger.log_rewards(self.epoch, total_reward)
 
     def _preprocess_observation(self, obs: Any) -> Tuple[np.ndarray, Any]:
         """

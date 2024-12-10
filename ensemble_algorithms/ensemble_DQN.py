@@ -1,8 +1,10 @@
+import os
+
 import tensorflow as tf
 from tensorflow import keras
 import gymnasium as gym
 import numpy as np
-from utils import load_hyperparams, combined_shape
+from utils import load_hyperparams, combined_shape, TensorBoardLogger
 from expert_stacking_encoder import ExpertStackingEncoder
 
 ensemble, hyperparams = load_hyperparams('ensemble_dqn')
@@ -10,6 +12,7 @@ ensemble, hyperparams = load_hyperparams('ensemble_dqn')
 
 class EnsembleDQN(tf.Module):
     def __init__(self,
+                 tensorboard_logging: bool,
                  env: gym.Env,
                  mlp_input_size,
                  mlp_input_dim,
@@ -125,6 +128,12 @@ class EnsembleDQN(tf.Module):
         self.traj = 0
 
         self.epochs = 0
+
+        self.logger = None
+        if tensorboard_logging:
+            # path to log directory
+            self.log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'logs'))
+            self.logger = TensorBoardLogger(log_dir=self.log_dir, filename='ensemble_DQN' + str(os.getpid()))
 
     def store_transition(self, mlp_obs, cnn_obs, act, rew, mlp_next_obs, cnn_next_obs, done):
         assert self.data_ptr <= self.max_size
@@ -260,40 +269,50 @@ class EnsembleDQN(tf.Module):
         #
         # return encoder_loss, expert_loss
 
-        ## Below is the old implementation of the loss function, this one does work but is not as efficient as the
-        # Compute target values # Q'(s', a')
-        next_q_vals, _ = self._target_model.forward(mlp_next_obs_tf, cnn_next_obs_tf)
-        _, next_expert_vals = self._target_model.forward(mlp_next_obs_tf, cnn_next_obs_tf, voting=False)
+        # # ## Below is the old implementation of the loss function, this one does work but is not as efficient as the
+        # # Compute target values # Q'(s', a')
+        # next_q_vals, _ = self._target_model.forward(mlp_next_obs_tf, cnn_next_obs_tf)
+        # _, next_expert_vals = self._target_model.forward(mlp_next_obs_tf, cnn_next_obs_tf, voting=False)
+        #
+        # # Compute max_a Q'(s', a')
+        # max_next_q = tf.reduce_max(next_q_vals, axis=-1)
+        # ensemble_targets = rews_tf + (self._gamma * (1.0 - dones_tf)) * max_next_q
+        #
+        # # Compute latent expert Q'(s', a')
+        # max_expert_vals = tf.reduce_max(next_expert_vals, axis=-1)
+        # expert_targets = rews_tf + (self._gamma * (1.0 - dones_tf)) * max_expert_vals
+        #
+        # # Compute encoder target
+        # encoder_targets = ensemble_targets - expert_targets
+        #
+        # # Compute predicted values
+        # # Q(s,a)
+        # q_vals, expert_preds = self.ensemble_model.forward(mlp_obs_tf, cnn_obs_tf, voting=False)
+        #
+        # # Gather the Q-values for the chosen actions
+        # batch_indices = tf.range(self._batch_size, dtype=tf.int32)
+        # chosen_ensemble_q = tf.gather_nd(q_vals, tf.stack([batch_indices, acts_tf], axis=1))
+        # chosen_expert_q = tf.gather_nd(expert_preds, tf.stack([batch_indices, acts_tf], axis=1))
+        # chosen_encoder_q = chosen_ensemble_q - chosen_expert_q
+        #
+        # # Compute TD errors
+        # expert_loss = expert_targets - chosen_expert_q
+        # encoder_loss = encoder_targets - chosen_encoder_q
+        #
+        # # MSE losses
+        # encoder_loss = tf.reduce_mean(tf.square(encoder_loss))
+        # expert_loss = tf.reduce_mean(tf.square(expert_loss))
+        # return encoder_loss, expert_loss
 
-        # Compute max_a Q'(s', a')
-        max_next_q = tf.reduce_max(next_q_vals, axis=-1)
-        ensemble_targets = rews_tf + (self._gamma * (1.0 - dones_tf)) * max_next_q
+        q_vals = self.ensemble_model.forward(mlp_obs_tf, cnn_obs_tf)[0]  # shape [1, act_dim]
+        acts_one_hot = tf.one_hot(acts_tf, depth=self._action_dim, dtype=tf.float32)
+        chosen_q = tf.reduce_sum(q_vals * acts_one_hot, axis=1)
 
-        # Compute latent expert Q'(s', a')
-        max_expert_vals = tf.reduce_max(next_expert_vals, axis=-1)
-        expert_targets = rews_tf + (self._gamma * (1.0 - dones_tf)) * max_expert_vals
-
-        # Compute encoder target
-        encoder_targets = ensemble_targets - expert_targets
-
-        # Compute predicted values
-        # Q(s,a)
-        q_vals, expert_preds = self.ensemble_model.forward(mlp_obs_tf, cnn_obs_tf, voting=False)
-
-        # Gather the Q-values for the chosen actions
-        batch_indices = tf.range(self._batch_size, dtype=tf.int32)
-        chosen_ensemble_q = tf.gather_nd(q_vals, tf.stack([batch_indices, acts_tf], axis=1))
-        chosen_expert_q = tf.gather_nd(expert_preds, tf.stack([batch_indices, acts_tf], axis=1))
-        chosen_encoder_q = chosen_ensemble_q - chosen_expert_q
-
-        # Compute TD errors
-        expert_loss = expert_targets - chosen_expert_q
-        encoder_loss = encoder_targets - chosen_encoder_q
-
-        # MSE losses
-        encoder_loss = tf.reduce_mean(tf.square(encoder_loss))
-        expert_loss = tf.reduce_mean(tf.square(expert_loss))
-        return encoder_loss, expert_loss
+        target_q_vals = self._target_model.forward(mlp_next_obs_tf, cnn_next_obs_tf)[0]
+        max_next_q = tf.reduce_max(target_q_vals, axis=1)
+        targets = rews_tf + self._gamma * (1.0 - dones_tf) * max_next_q
+        loss = tf.reduce_mean(tf.square(targets - chosen_q))
+        return loss, loss
 
     def train_models(self, epoch_num: int):
         if self.data_ptr < self._batch_size:

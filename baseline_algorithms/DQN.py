@@ -1,9 +1,11 @@
+import os
+
 import tensorflow as tf
 from keras import Input
 from tensorflow import keras
 import gymnasium as gym
 import numpy as np
-from utils import load_hyperparams, combined_shape
+from utils import load_hyperparams, combined_shape, TensorBoardLogger
 
 # Load hyperparameters
 ensemble, hyperparams = load_hyperparams('dqn')
@@ -14,10 +16,8 @@ def q_network(input_dim, action_dim, seed: int, activations='relu'):
     with tf.device('/GPU:0'):
         model = keras.Sequential([
             Input(shape=(input_dim,)),
-            keras.layers.Dense(32, activation=activations),
-            keras.layers.Dense(24, activation=activations),
-            keras.layers.Dense(16, activation=activations),
-            keras.layers.Dense(8, activation=activations),
+            keras.layers.Dense(128, activation=activations),
+            keras.layers.Dense(128, activation=activations),
             keras.layers.Dense(action_dim)
         ])
     return model
@@ -25,10 +25,11 @@ def q_network(input_dim, action_dim, seed: int, activations='relu'):
 
 class DQN(tf.Module):
     def __init__(self,
+                 tensorboard_logging: bool,
                  env: gym.Env,
                  input_dim,
                  action_dim,
-                 buffer_size=10000,
+                 buffer_size=100000,
                  batch_size: int = hyperparams['batch_size'],
                  traj_per_epoch: int = hyperparams['traj_per_epoch'],
                  gamma: float = hyperparams['gamma'],
@@ -80,6 +81,12 @@ class DQN(tf.Module):
         self.traj = 0
 
         self.epochs = 0
+
+        self.logger = None
+        if tensorboard_logging:
+            # path to log directory
+            self.log_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'logs'))
+            self.logger = TensorBoardLogger(log_dir=self.log_dir, filename='DQN' + str(os.getpid()))
 
     def store_transition(self, obs, act, rew, next_obs, done):
         assert self.data_ptr <= self.max_size
@@ -165,6 +172,7 @@ class DQN(tf.Module):
         rews_tf = tf.convert_to_tensor(rews, dtype=tf.float32)
         dones_tf = tf.convert_to_tensor(dones, dtype=tf.float32)
 
+        losses = 0
         for _ in range(self._train_q_iters):
             with tf.GradientTape() as tape:
                 loss = self.compute_q_loss(obs_tf, acts_tf, rews_tf, next_obs_tf, dones_tf)

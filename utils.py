@@ -5,6 +5,7 @@ import datetime
 import tensorboard
 
 import numpy as np
+from torch.utils.tensorboard import SummaryWriter
 
 
 def load_hyperparams(algorithm: str):
@@ -36,7 +37,7 @@ def combined_shape(length, shape=None):
 
 
 class TensorBoardLogger:
-    def __init__(self, log_dir=None):
+    def __init__(self, log_dir=None, filename='training_scenario'):
         """
         Initializes the TensorBoard logger.
 
@@ -46,25 +47,44 @@ class TensorBoardLogger:
         if log_dir is None:
             current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
             log_dir = os.path.join("logs", current_time)
-        self.log_dir = log_dir
-        self.writer = tf.summary.create_file_writer(self.log_dir)
+        self.log_dir = os.path.join(log_dir, filename)
+        self.writer = SummaryWriter(log_dir=self.log_dir, filename_suffix='_tb')
         print(f"TensorBoard logs will be saved to: {self.log_dir}")
 
-    def log_metrics(self, epoch, rewards, expert_loss, encoder_loss):
+    def log_rewards(self, epoch, rewards):
         """
         Logs the specified metrics to TensorBoard.
 
         Args:
             epoch (int): Current epoch number.
             rewards (float): Total rewards for the epoch.
+        """
+        self.writer.add_scalar('Rewards per Epoch', rewards, epoch)
+        self.writer.flush()
+
+    def log_losses(self, epoch, loss):
+        """
+        Logs the specified metrics to TensorBoard.
+
+        Args:
+            epoch (int): Current epoch number.
+            loss (float): Loss for the epoch.
+        """
+        self.writer.add_scalar('Loss per Epoch', loss, epoch)
+        self.writer.flush()
+
+    def log_ensemble_losses(self, epoch, expert_loss, encoder_loss):
+        """
+        Logs the specified metrics to TensorBoard.
+
+        Args:
+            epoch (int): Current epoch number.
             expert_loss (float): Expert loss for the epoch.
             encoder_loss (float): Encoder loss for the epoch.
         """
-        with self.writer.as_default():
-            tf.summary.scalar('Rewards per Epoch', rewards, step=epoch)
-            tf.summary.scalar('Expert Loss per Epoch', expert_loss, step=epoch)
-            tf.summary.scalar('Encoder Loss per Epoch', encoder_loss, step=epoch)
-            self.writer.flush()
+        self.writer.add_scalar('Expert Loss per Epoch', expert_loss, epoch)
+        self.writer.add_scalar('Encoder Loss per Epoch', encoder_loss, epoch)
+        self.writer.flush()
 
     def close(self):
         """

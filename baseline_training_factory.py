@@ -18,6 +18,7 @@ class TrainingFactory:
             train_iters: int,
             max_epochs: int,
             replay_buffer_size: int,
+            tensorboard_logging: bool = False
     ):
         """
         Initialize the TrainingFactory.
@@ -69,6 +70,7 @@ class TrainingFactory:
 
         # Initialize the SimpleDQN agent
         self.learner = DQN(
+            tensorboard_logging=tensorboard_logging,
             env=self.env,
             input_dim=input_dim,
             action_dim=action_dim,
@@ -127,3 +129,6 @@ class TrainingFactory:
                     self.learner.train_models(epoch_num=self.epoch)
 
         print(f"Episode completed: Total Reward = {total_reward}, Epoch Steps = {step_count}")
+
+        if self.learner.logger is not None:
+            self.learner.logger.log_rewards(self.epoch, total_reward)

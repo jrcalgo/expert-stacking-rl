@@ -92,8 +92,7 @@ def expert_MLP(input_dim: int, output_dim: int, seed: int, activation: list[str]
     with tf.device('/GPU:0'):
         model = keras.Sequential([
             Input(shape=(input_dim,)),
-            keras.layers.Dense(int(input_dim*1.5), activation=activation[0]),
-            keras.layers.Dense(int(input_dim), activation=activation[1]),
+            keras.layers.Dense(64, activation=activation[0]),
             keras.layers.Dense(output_dim)
         ])
     return model
@@ -143,10 +142,8 @@ def stacking_encoder(input_dim: int, action_dim: int, seed: int, activation: str
     with tf.device('/GPU:0'):
         model = keras.Sequential([
             Input(shape=(input_dim,)),
-            keras.layers.Dense(32, activation=activation),
-            keras.layers.Dense(24, activation=activation),
-            keras.layers.Dense(16, activation=activation),
-            keras.layers.Dense(8, activation=activation),
+            keras.layers.Dense(128, activation=activation),
+            keras.layers.Dense(128, activation=activation),
             keras.layers.Dense(action_dim)
         ])
     return model
