@@ -3,6 +3,7 @@ import numpy as np
 from typing import Any, Tuple
 
 from baseline_algorithms.DQN import DQN
+from baseline_algorithms.REINFORCE import REINFORCE
 
 
 class TrainingFactory:
@@ -68,14 +69,23 @@ class TrainingFactory:
         else:
             raise NotImplementedError(f"Unsupported action space type: {type(action_space)}")
 
-        # Initialize the SimpleDQN agent
-        self.learner = DQN(
-            tensorboard_logging=tensorboard_logging,
-            env=self.env,
-            input_dim=input_dim,
-            action_dim=action_dim,
-            buffer_size=self.replay_buffer_size,
-        )
+        # Initialize algorithm learner
+        if self.algorithm_name == "DQN":
+            self.learner = DQN(
+                tensorboard_logging=tensorboard_logging,
+                env=self.env,
+                input_dim=input_dim,
+                action_dim=action_dim,
+                buffer_size=self.replay_buffer_size,
+            )
+        elif self.algorithm_name == "REINFORCE":
+            self.learner = REINFORCE(
+                tensorboard_logging=tensorboard_logging,
+                env=self.env,
+                input_dim=input_dim,
+                action_dim=action_dim,
+                buffer_size=self.replay_buffer_size,
+            )
 
         self.epoch = 0
 
@@ -104,20 +114,29 @@ class TrainingFactory:
 
         while not done:
             # Select action using the agent's policy
-            action = self.learner.step(obs)
+            action, value = self.learner.step(obs)
 
             # Take action in the environment
             next_obs, reward, terminated, truncated, info = self.env.step(action)
             done = terminated or truncated
 
             # Store transition in replay buffer
-            self.learner.store_transition(
-                obs=obs,
-                act=action,
-                rew=reward,
-                next_obs=next_obs,
-                done=done
-            )
+            if self.algorithm_name == "DQN":
+                self.learner.store_transition(
+                    obs=obs,
+                    act=action,
+                    rew=reward,
+                    next_obs=next_obs,
+                    done=done
+                )
+            elif self.algorithm_name == "REINFORCE":
+                self.learner.store_transition(
+                    obs=obs,
+                    act=action,
+                    rew=reward,
+                    done=done,
+                    val=value
+                )
 
             total_reward += reward
             step_count += 1
@@ -125,8 +144,7 @@ class TrainingFactory:
 
             # Train models according to training frequency
             if self.learner.traj > 0 and self.learner.traj % self.learner._traj_per_epoch == 0:
-                if self.learner.traj % self.learner._train_update_freq == 0:
-                    self.learner.train_models(epoch_num=self.epoch)
+                self.learner.train_models(epoch_num=self.epoch)
 
         print(f"Episode completed: Total Reward = {total_reward}, Epoch Steps = {step_count}")
 

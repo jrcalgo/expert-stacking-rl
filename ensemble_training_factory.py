@@ -111,6 +111,10 @@ class TrainingFactory:
                 cnn_batch_size=self.hyperparams['cnn_batch_size'] if 'cnn_batch_size' in self.hyperparams else 1,
                 expert_rotation_freq=self.hyperparams['expert_rotation_freq'] if 'expert_rotation_freq' in self.hyperparams else 16,
             )
+        elif self.algorithm == "ENSEMBLE_REINFORCE":
+            self.learner = EnsembleREINFORCE(
+                env=self.env
+            )
         elif self.algorithm == 'ENSEMBLE_DDQN':
             self.learner = EnsembleDDQN(
                 env=self.env,

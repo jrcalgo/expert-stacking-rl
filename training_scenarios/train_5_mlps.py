@@ -3,8 +3,8 @@ from ensemble_training_factory import TrainingFactory
 if __name__ == "__main__":
     import argparse as arg
     parser = arg.ArgumentParser()
-    parser.add_argument("--algorithm_name", default="ensemble_DQN",
-                        help="The algorithm to train. Options: DQN, PPO")
+    parser.add_argument("--algorithm_name", default="REINFORCE",
+                        help="The algorithm to train. Options: DQN, REINFORCE")
     parser.add_argument("--env_name", default="LunarLander-v2")
     parser.add_argument("--env_seed", default=0)
     parser.add_argument("--train_iters", default=10000)
@@ -12,9 +12,9 @@ if __name__ == "__main__":
     parser.add_argument("--replay_buffer_size", default=100000)
     parser.add_argument("--mlp_count", default=5)
     parser.add_argument("--cnn_count", default=0)
-    parser.add_argument("--mlp_batch_size", default=5)
+    parser.add_argument("--mlp_batch_size", default=3)
     parser.add_argument("--cnn_batch_size", default=0)
-    parser.add_argument("--expert_rotation_freq", default=10000)
+    parser.add_argument("--expert_rotation_freq", default=10)
     parser.add_argument("--log_tensorboard", default=True)
     args = parser.parse_args()
 

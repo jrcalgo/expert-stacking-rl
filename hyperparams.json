@@ -24,7 +24,16 @@
         "q_lr": 1e-3,
         "train_q_iters": 80,
         "train_update_freq": 16,
-        "target_update_freq": 64
+        "target_update_freq": 64,
+        "buffer_size": 100000
+    },
+    "REINFORCE": {
+        "traj_per_epoch": 16,
+        "gamma": 0.98,
+        "lam": 0.97,
+        "pi_lr": 0.0003,
+        "vf_lr": 0.0003,
+        "train_vf_iters": 80
     },
     "ENSEMBLE_DQN": {
         "batch_size": 128,
